@@ -561,8 +561,15 @@ func (d *majsoulRoundData) ParseRyuukyoku() (type_ int, whos []int, points []int
 func (d *majsoulRoundData) IsNukiDora() bool {
 	msg := d.msg
 	// ActionBaBei RecordBaBei
-	// 新版本协议有空通知消息（moqie:false 或带有 tile_state），通过 *Moqie && IsLiqi==nil 区分
-	return msg.Seat != nil && msg.Moqie != nil && *msg.Moqie && msg.Tile == "" && msg.IsLiqi == nil
+	// 旧协议：moqie=true, tile 为空；新协议：moqie=false, tile 为空, 有 tile_state
+	// 关键特征：Seat 对应自家（parseWho==0），tile 为空，is_liqi 为空（非切牌）
+	if msg.Seat == nil || msg.Tile != "" || msg.IsLiqi != nil {
+		return false
+	}
+	if msg.Moqie == nil {
+		return false
+	}
+	return d.parseWho(*msg.Seat) == 0
 }
 
 func (d *majsoulRoundData) ParseNukiDora() (who int, isTsumogiri bool) {
