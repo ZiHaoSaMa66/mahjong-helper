@@ -90,6 +90,13 @@ func analysisPlayerWithRisk(playerInfo *model.PlayerInfo, mixedRiskTable riskTab
 		printResults14WithRisk(results14, mixedRiskTable)
 		printResults14WithRisk(incShantenResults14, mixedRiskTable)
 	default:
+		// 增加调试日志输出以便排查手牌数量异常原因
+		fmt.Printf("Debug: 手牌数量=%d, handTiles34=%v, melds=%v, discardTiles=%d\n",
+			countOfTiles,
+			playerInfo.HandTiles34,
+			playerInfo.Melds,
+			len(playerInfo.DiscardTiles))
+		fmt.Printf("Debug: 人类可读手牌=%s\n", humanHands(playerInfo))
 		err := fmt.Errorf("参数错误: %d 张牌", countOfTiles)
 		if debugMode {
 			panic(err)

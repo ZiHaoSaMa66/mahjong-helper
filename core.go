@@ -787,6 +787,16 @@ func (d *roundData) analysis() error {
 			riskTables := d.analysisTilesRisk()
 			mixedRiskTable := riskTables.mixedRiskTable()
 
+			// 新版本协议：摸切时牌可能尚未通过 IsSelfDraw 加入手牌（摸牌通知 tile 为空）
+			// 此时需要先模拟摸牌：从牌山减量，加入手牌
+			if isTsumogiri && d.counts[discardTile] == 0 {
+				d.descLeftCounts(discardTile)
+				d.counts[discardTile]++
+				if isRedFive {
+					d.numRedFives[discardTile/9]++
+				}
+			}
+
 			// 自家（从手牌 d.counts）舍牌（至牌河 d.globalDiscardTiles）
 			d.counts[discardTile]--
 

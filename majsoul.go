@@ -56,13 +56,22 @@ type majsoulMessage struct {
 	//ReadyIDList []int `json:"ready_id_list"`
 
 	// ActionNewRound
-	// {"chang":0,"ju":0,"ben":0,"tiles":["1m","3m","7m","3p","6p","7p","6s","1z","1z","2z","3z","4z","7z"],"dora":"6m","scores":[25000,25000,25000,25000],"liqibang":0,"al":false,"md5":"","left_tile_count":69}
+	// 新版本：tiles 可能为空，手牌放在 opens 中
 	MD5   string      `json:"md5"`
 	Chang *int        `json:"chang"`
 	Ju    *int        `json:"ju"`
 	Ben   *int        `json:"ben"`
 	Tiles interface{} `json:"tiles"` // 一般情况下为 []interface{}, interface{} 即 string，但是暗杠的情况下，该值为一个 string
 	Dora  string      `json:"dora"`
+
+
+	// 新版本 ActionNewRound 新增字段
+	Opens []struct {
+		Seat  int      `json:"seat"`
+		Tiles []string `json:"tiles"`
+		Count []int    `json:"count"`
+	} `json:"opens"`
+
 
 	// RecordNewRound
 	Tiles0 []string `json:"tiles0"`
@@ -78,6 +87,7 @@ type majsoulMessage struct {
 	Tile          string   `json:"tile"`
 	Doras         []string `json:"doras"` // 暗杠摸牌了，同时翻出杠宝牌指示牌
 	LeftTileCount *int     `json:"left_tile_count"`
+	TileState     *int     `json:"tile_state"`
 
 	// ActionDiscardTile
 	// {"seat":0,"tile":"5z","is_liqi":false,"moqie":true,"zhenting":false,"is_wliqi":false}
@@ -285,14 +295,16 @@ func (d *majsoulRoundData) HandleLogin() {
 func (d *majsoulRoundData) IsInit() bool {
 	msg := d.msg
 	// ResAuthGame || ActionNewRound RecordNewRound
-	return msg.IsGameStart != nil || msg.MD5 != ""
+	// md5 字段可能为空（新版本 ActionNewRound），此时通过 Chang 字段是否存在来判断
+	return msg.IsGameStart != nil || msg.MD5 != "" || msg.Chang != nil
 }
 
 func (d *majsoulRoundData) ParseInit() (roundNumber int, benNumber int, dealer int, doraIndicators []int, handTiles []int, numRedFives []int) {
 	msg := d.msg
 
-	if playerNumber := len(msg.SeatList); playerNumber >= 3 {
-		d.playerNumber = playerNumber
+	hasSeatList := len(msg.SeatList) >= 3
+	if hasSeatList {
+		d.playerNumber = len(msg.SeatList)
 		// 获取自家初始座位：0-第一局的东家 1-第一局的南家 2-第一局的西家 3-第一局的北家
 		for i, accountID := range msg.SeatList {
 			if accountID == gameConf.currentActiveMajsoulAccountID {
@@ -300,9 +312,14 @@ func (d *majsoulRoundData) ParseInit() (roundNumber int, benNumber int, dealer i
 				break
 			}
 		}
-		// dealer: 0=自家, 1=下家, 2=对家, 3=上家
-		dealer = (4 - d.selfSeat) % 4
-		return
+		if msg.Chang == nil {
+			// 旧版本协议：仅座位分配消息（无 Chang 字段），提前返回
+			dealer = (4 - d.selfSeat) % 4
+			return
+		}
+		// 新版本协议：seatList 和 ActionNewRound 数据在同一消息中
+		// 设置 dealer=-1 告知 core.go 走完整初始化流程
+		dealer = -1
 	} else if len(msg.Tiles2) > 0 {
 		if len(msg.Tiles3) > 0 {
 			d.playerNumber = 4
@@ -326,10 +343,30 @@ func (d *majsoulRoundData) ParseInit() (roundNumber int, benNumber int, dealer i
 	numRedFives = make([]int, 3)
 
 	var majsoulTiles []string
-	if msg.Tiles != nil { // 实战
-		majsoulTiles = d.normalTiles(msg.Tiles)
-	} else { // 牌谱、观战
-		majsoulTiles = [][]string{msg.Tiles0, msg.Tiles1, msg.Tiles2, msg.Tiles3}[d.selfSeat]
+	// 优先从 opens 中获取自家手牌（新版本 ActionNewRound）
+	if len(msg.Opens) > 0 {
+		for _, op := range msg.Opens {
+			if op.Seat == d.selfSeat {
+				if len(op.Count) > 0 {
+					// 新版本使用 count 数组（34个元素的计数数组）
+					for tile, count := range op.Count {
+						for i := 0; i < count; i++ {
+							handTiles = append(handTiles, tile)
+						}
+					}
+					return
+				}
+				majsoulTiles = op.Tiles
+				break
+			}
+		}
+	}
+	if len(majsoulTiles) == 0 {
+		if msg.Tiles != nil { // 实战
+			majsoulTiles = d.normalTiles(msg.Tiles)
+		} else { // 牌谱、观战
+			majsoulTiles = [][]string{msg.Tiles0, msg.Tiles1, msg.Tiles2, msg.Tiles3}[d.selfSeat]
+		}
 	}
 	for _, majsoulTile := range majsoulTiles {
 		tile, isRedFive := d.mustParseMajsoulTile(majsoulTile)
@@ -345,7 +382,11 @@ func (d *majsoulRoundData) ParseInit() (roundNumber int, benNumber int, dealer i
 func (d *majsoulRoundData) IsSelfDraw() bool {
 	msg := d.msg
 	// ActionDealTile RecordDealTile
-	return msg.Seat != nil && msg.Tile != "" && msg.Moqie == nil && d.parseWho(*msg.Seat) == 0
+	// 旧格式：seat, tile 非空, moqie 不存在
+	if msg.Seat != nil && msg.Tile != "" && msg.Moqie == nil && d.parseWho(*msg.Seat) == 0 {
+		return true
+	}
+	return false
 }
 
 func (d *majsoulRoundData) ParseSelfDraw() (tile int, isRedFive bool, kanDoraIndicator int) {
@@ -520,7 +561,8 @@ func (d *majsoulRoundData) ParseRyuukyoku() (type_ int, whos []int, points []int
 func (d *majsoulRoundData) IsNukiDora() bool {
 	msg := d.msg
 	// ActionBaBei RecordBaBei
-	return msg.Seat != nil && msg.Moqie != nil && msg.Tile == ""
+	// 新版本协议有空通知消息（moqie:false 或带有 tile_state），通过 *Moqie && IsLiqi==nil 区分
+	return msg.Seat != nil && msg.Moqie != nil && *msg.Moqie && msg.Tile == "" && msg.IsLiqi == nil
 }
 
 func (d *majsoulRoundData) ParseNukiDora() (who int, isTsumogiri bool) {
